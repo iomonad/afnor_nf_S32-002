@@ -38,6 +38,9 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+
+#include <libhackrf/hackrf.h>
 
 int main(int argc, char *argv[]) {
      exit(EXIT_SUCCESS);
