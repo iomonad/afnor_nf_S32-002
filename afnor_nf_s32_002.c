@@ -42,6 +42,114 @@
 
 #include <libhackrf/hackrf.h>
 
-int main(int argc, char *argv[]) {
-     exit(EXIT_SUCCESS);
+#define SAMPLE_RATE 0x1e8480
+#define CENTER_FREQ 0x33c134e0
+#define TX_GAIN     0x71
+
+static uint8_t* generate_pb(int *sc) {
+     const float pb_duration = 830e-6;
+     const int samples = (int)(pb_duration * SAMPLE_RATE);
+     *sc = samples;
+
+     uint8_t *pb = NULL;
+
+     if ((pb = (uint8_t*)malloc(samples)) == NULL) {
+	  printf("pb alloc failed\n");
+	  exit(EXIT_FAILURE);
+     }
+
+     const int half_period = samples / 4;
+
+     for (int i = 0; i < samples; i++)
+	  pb[i] = (i / half_period) % 2 ? 0x7f : 0;
+
+     return pb;
+}
+
+static uint8_t* build_packet(int *total_samples) {
+     const uint8_t itc[] = {0x33, 0x8A, 0x00};
+     const int bits = 24;
+     const int spb = 20;
+
+     int preamble_samples;
+     uint8_t *preamble = generate_pb(&preamble_samples);
+     *total_samples = preamble_samples + bits * spb;
+
+     uint8_t *samples = NULL;
+
+     if ((samples = (uint8_t*)malloc(*total_samples)) == NULL) {
+	  printf("allocation failed\n");
+	  exit(EXIT_FAILURE);
+     }
+
+     memcpy(samples, preamble, preamble_samples);
+     free(preamble);
+
+     int sidx = preamble_samples;
+     for (int i = 0; i < bits; i++) {
+	  int bidx = i / 8;
+	  int bit_idx = 7 - (i % 8);
+	  uint8_t bit = (itc[bidx] >> bit_idx) & 0x01;
+
+	  for(int j=0; j<spb; j++) {
+	       samples[sidx++] = bit ? 127 : 0;
+	  }
+     }
+     return samples;
+}
+
+
+static int tx_callback(hackrf_transfer *transfer) {
+     static size_t bytes_remaining = 0;
+     static uint8_t *samples = NULL;
+
+     if (!bytes_remaining) {
+	  int total_samples;
+	  samples = build_packet(&total_samples);
+	  bytes_remaining = total_samples;
+     }
+
+     size_t bytes_to_send = transfer->valid_length;
+     if (bytes_to_send > bytes_remaining) {
+	  bytes_to_send = bytes_remaining;
+     }
+
+     memcpy(transfer->buffer, samples, bytes_to_send);
+     samples += bytes_to_send;
+     bytes_remaining -= bytes_to_send;
+
+     if(bytes_remaining == 0) {
+	  free(samples - bytes_to_send);
+	  return -1;
+     }
+     return 0;
+}
+
+int main() {
+     hackrf_device *device = NULL;
+
+     if (hackrf_init() != HACKRF_SUCCESS) {
+	  return EXIT_FAILURE;
+     }
+
+     if (hackrf_open(&device) != HACKRF_SUCCESS) {
+	  hackrf_exit();
+	  return EXIT_FAILURE;
+     }
+
+     hackrf_set_freq(device, CENTER_FREQ);
+     hackrf_set_sample_rate_manual(device, SAMPLE_RATE, 1);
+     hackrf_set_txvga_gain(device, TX_GAIN);
+
+     hackrf_start_tx(device, tx_callback, NULL);
+
+     while (hackrf_is_streaming(device) == HACKRF_TRUE) {
+	  ;;
+     }
+
+     hackrf_close(device);
+     hackrf_exit();
+     printf("OK\n");
+
+     return EXIT_SUCCESS;
 }
